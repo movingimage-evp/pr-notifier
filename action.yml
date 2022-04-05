@@ -1,0 +1,8 @@
+name: 'Notify old PRs'
+description: 'A Github action that notifies old PRs that are open longer than 2 days'
+runs:
+  using: 'docker'
+  image: 'Dockerfile'
+branding:
+  icon: 'archive'
+  color: 'blue'
