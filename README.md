@@ -1,5 +1,5 @@
 # PR notifier
-A Github action that shames PR's that are open longer than 2 days
+A Github action that shames PR's that are open longer `DAYS_BEFORE` days
 
 ## usage
 ```
@@ -7,7 +7,7 @@ name: PR notifier
 
 on:
   schedule:
-    - cron: "0 6 * * *"
+    - cron: "30 10 * * 1-5"
 
 jobs:
   shame:
