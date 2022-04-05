@@ -21,6 +21,7 @@ var daysBefore = os.Getenv("DAYS_BEFORE")
 var slackApiKey = os.Getenv("SLACK_API_KEY")
 var slackChannelId = os.Getenv("SLACK_CHANNEL_ID")
 
+// GitHubPullRequest represents some props returned by github api list pulls request
 type GitHubPullRequest struct {
 	CreatedAt time.Time            `json:"created_at"`
 	Title     string               `json:"title"`
@@ -92,7 +93,8 @@ func main() {
 
 	slackClient := slack.New(slackApiKey)
 	ctx := context.Background()
-	block := []slack.Block{slack.NewContextBlock("context", slack.NewTextBlockObject(slack.PlainTextType, "PR notice", false, false))}
+	block := []slack.Block{
+		slack.NewContextBlock("context", slack.NewTextBlockObject(slack.PlainTextType, "PR notice", false, false))}
 
 	for _, pr := range prList {
 		if pr.CreatedAt.Before(now.AddDate(0, 0, daysBeforeConverted)) {
