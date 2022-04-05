@@ -1,24 +1,34 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"github.com/slack-go/slack"
 	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 )
 
 var httpClient http.Client
 var githubRepo = os.Getenv("GITHUB_REPOSITORY")
 var githubToken = os.Getenv("GITHUB_TOKEN")
+var daysBefore = os.Getenv("DAYS_BEFORE")
+var slackApiKey = os.Getenv("SLACK_API_KEY")
 
 type GitHubPullRequest struct {
-	CreatedAt time.Time `json:"created_at"`
-	Title     string    `json:"title"`
-	Number    int64     `json:"number"`
+	CreatedAt time.Time            `json:"created_at"`
+	Title     string               `json:"title"`
+	Number    int64                `json:"number"`
+	Reviewers []RequestedReviewers `json:"requested_reviewers"`
+}
+
+type RequestedReviewers struct {
+	Login string
 }
 
 func ghRequest(request *http.Request) (*http.Response, error) {
@@ -62,11 +72,31 @@ func main() {
 	if err = json.Unmarshal(body, &prList); err != nil {
 		log.Fatal(err)
 	}
-	for _, pr := range prList {
-		if pr.CreatedAt.Before(now.AddDate(0, 0, -2)) {
 
-			// todo: add slack message handling here
-			//age := time.Since(pr.CreatedAt)
+	daysBeforeConverted, err := strconv.Atoi(daysBefore)
+
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	slackClient := slack.New(slackApiKey)
+	ctx := context.Background()
+	block := []slack.Block{slack.NewContextBlock("context", slack.NewTextBlockObject(slack.PlainTextType, "hello", false, false))}
+
+	messageOption := []slack.MsgOption{
+		slack.MsgOptionBlocks(block...),
+		slack.MsgOptionText("text", false),
+	}
+
+	_, _, err = slackClient.PostMessageContext(ctx, "C03AV6T788Y", messageOption...)
+
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	for _, pr := range prList {
+		if pr.CreatedAt.Before(now.AddDate(0, 0, daysBeforeConverted)) {
+			log.Printf("listing PRs for repo %s\n", pr.Reviewers)
 		}
 	}
 }

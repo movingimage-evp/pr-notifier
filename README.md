@@ -17,5 +17,6 @@ jobs:
       - name: shame old prs
         uses: movingimage-evp/pr-notifier@v1
         env:
+          DAYS_BEFORE: -2
           GITHUB_TOKEN: ${{ github.token }}
 ```
