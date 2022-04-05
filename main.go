@@ -62,6 +62,10 @@ func main() {
 		log.Fatal(err)
 	}
 
+	if response.StatusCode != http.StatusOK {
+		log.Fatalf("GitHub api request failed with status code %d", response.StatusCode)
+	}
+
 	body, err := ioutil.ReadAll(response.Body)
 
 	if err != nil {
