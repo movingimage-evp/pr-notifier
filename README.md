@@ -3,7 +3,7 @@ A Github action that shames PR's that are open longer than 2 days
 
 ## usage
 ```
-name: Shame Bot
+name: PR notifier
 
 on:
   schedule:
