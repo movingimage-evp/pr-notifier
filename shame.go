@@ -21,13 +21,15 @@ type GitHubPullRequest struct {
 	Number    int64     `json:"number"`
 }
 
-func githubRequest(request *http.Request) (*http.Response, error) {
+func ghRequest(request *http.Request) (*http.Response, error) {
 	request.Header.Set("Accept", "application/vnd.github.shadow-cat-preview+json")
 	request.Header.Set("Authorization", fmt.Sprintf("token %s", githubToken))
 	response, err := httpClient.Do(request)
+
 	if err != nil {
 		return nil, err
 	}
+
 	return response, nil
 }
 
@@ -37,14 +39,18 @@ func main() {
 	customTransport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
 	httpClient = http.Client{Transport: customTransport, Timeout: time.Minute}
 	log.Printf("listing PRs for repo %s\n", githubRepo)
-	request, err := http.NewRequest("GET", fmt.Sprintf("https://api.github.com/repos/%s/pulls", githubRepo), nil)
+	request, err := http.NewRequest(http.MethodGet, fmt.Sprintf("https://api.github.com/repos/%s/pulls", githubRepo), nil)
+
 	if err != nil {
 		log.Fatal(err)
 	}
-	response, err := githubRequest(request)
+
+	response, err := ghRequest(request)
+
 	if err != nil {
 		log.Fatal(err)
 	}
+
 	body, err := ioutil.ReadAll(response.Body)
 
 	if err != nil {
@@ -52,6 +58,7 @@ func main() {
 	}
 
 	var prList []GitHubPullRequest
+
 	if err = json.Unmarshal(body, &prList); err != nil {
 		log.Fatal(err)
 	}
