@@ -19,6 +19,7 @@ var githubRepo = os.Getenv("GITHUB_REPOSITORY")
 var githubToken = os.Getenv("GITHUB_TOKEN")
 var daysBefore = os.Getenv("DAYS_BEFORE")
 var slackApiKey = os.Getenv("SLACK_API_KEY")
+var slackChannelId = os.Getenv("SLACK_CHANNEL_ID")
 
 type GitHubPullRequest struct {
 	CreatedAt time.Time            `json:"created_at"`
@@ -88,7 +89,7 @@ func main() {
 		slack.MsgOptionText("text", false),
 	}
 
-	_, _, err = slackClient.PostMessageContext(ctx, "C03AV6T788Y", messageOption...)
+	_, _, err = slackClient.PostMessageContext(ctx, slackChannelId, messageOption...)
 
 	if err != nil {
 		log.Fatal(err)
