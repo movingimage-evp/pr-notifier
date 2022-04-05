@@ -28,6 +28,10 @@ type GitHubPullRequest struct {
 	Reviewers []RequestedReviewers `json:"requested_reviewers"`
 }
 
+func (pr *GitHubPullRequest) hasPendingReviewers() bool {
+	return len(pr.Reviewers) != 0
+}
+
 type RequestedReviewers struct {
 	Login string
 }
@@ -101,7 +105,9 @@ func main() {
 
 	for _, pr := range prList {
 		if pr.CreatedAt.Before(now.AddDate(0, 0, daysBeforeConverted)) {
-			log.Printf("listing PRs for repo %s\n", pr.Reviewers)
+			if pr.hasPendingReviewers() {
+				log.Printf("PR %s has open reviewers %s\n", pr.Title, pr.Reviewers)
+			}
 		}
 	}
 }
