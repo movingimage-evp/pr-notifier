@@ -26,6 +26,8 @@ type GitHubPullRequest struct {
 	Title     string               `json:"title"`
 	Number    int64                `json:"number"`
 	Reviewers []RequestedReviewers `json:"requested_reviewers"`
+	Draft     bool                 `json:"draft"`
+	HtmlUrl   string               `json:"html_url"`
 }
 
 func (pr *GitHubPullRequest) hasPendingReviewers() bool {
@@ -90,23 +92,26 @@ func main() {
 
 	slackClient := slack.New(slackApiKey)
 	ctx := context.Background()
-	block := []slack.Block{slack.NewContextBlock("context", slack.NewTextBlockObject(slack.PlainTextType, "hello", false, false))}
-
-	messageOption := []slack.MsgOption{
-		slack.MsgOptionBlocks(block...),
-		slack.MsgOptionText("text", false),
-	}
-
-	_, _, err = slackClient.PostMessageContext(ctx, slackChannelId, messageOption...)
-
-	if err != nil {
-		log.Fatal(err)
-	}
+	block := []slack.Block{slack.NewContextBlock("context", slack.NewTextBlockObject(slack.PlainTextType, "PR notice", false, false))}
 
 	for _, pr := range prList {
 		if pr.CreatedAt.Before(now.AddDate(0, 0, daysBeforeConverted)) {
-			if pr.hasPendingReviewers() {
-				log.Printf("PR %s has open reviewers %s\n", pr.Title, pr.Reviewers)
+			if pr.Draft == false && pr.hasPendingReviewers() {
+				message := fmt.Sprintf("PR %s has open reviewers %s. Please go to %s", pr.Title, pr.Reviewers, pr.HtmlUrl)
+				log.Println(message)
+
+				messageOption := []slack.MsgOption{
+					slack.MsgOptionBlocks(block...),
+					slack.MsgOptionText(message, false),
+				}
+
+				_, _, err = slackClient.PostMessageContext(ctx, slackChannelId, messageOption...)
+
+				if err != nil {
+					log.Fatal(err)
+				}
+
+				time.Sleep(50 * time.Millisecond)
 			}
 		}
 	}
