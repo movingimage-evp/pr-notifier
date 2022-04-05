@@ -1,4 +1,4 @@
-# shame_bot
+# PR notifier
 A Github action that shames PR's that are open longer than 2 days
 
 ## usage
