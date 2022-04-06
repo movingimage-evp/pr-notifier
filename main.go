@@ -93,8 +93,6 @@ func main() {
 
 	slackClient := slack.New(slackApiKey)
 	ctx := context.Background()
-	block := []slack.Block{
-		slack.NewContextBlock("context", slack.NewTextBlockObject(slack.PlainTextType, "PR notice", false, false))}
 
 	for _, pr := range prList {
 		if pr.CreatedAt.Before(now.AddDate(0, 0, daysBeforeConverted)) {
@@ -103,8 +101,8 @@ func main() {
 				log.Println(message)
 
 				messageOption := []slack.MsgOption{
-					slack.MsgOptionBlocks(block...),
-					slack.MsgOptionText(message, false),
+					slack.MsgOptionUsername("PR notifier"),
+					slack.MsgOptionText(message, true),
 				}
 
 				_, _, err = slackClient.PostMessageContext(ctx, slackChannelId, messageOption...)
@@ -113,7 +111,7 @@ func main() {
 					log.Fatal(err)
 				}
 
-				time.Sleep(50 * time.Millisecond)
+				time.Sleep(100 * time.Millisecond)
 			}
 		}
 	}
