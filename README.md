@@ -1,7 +1,9 @@
 # PR notifier
-A GitHub action that shames PR's that are open longer `DAYS_BEFORE` days
+Use GitHub Actions to notify Slack that a pull request is opened since `DAYS_BEFORE` days.
 
 ## Usage
+
+Add the following YAML to your new GitHub Actions workflow:
 ```
 name: PR notifier
 
@@ -22,3 +24,16 @@ jobs:
           DAYS_BEFORE: -2
           GITHUB_TOKEN: ${{ github.token }}
 ```
+
+### Arguments
+
+#### SLACK_API_KEY
+The Slack api key. You'll need to create a new Slack bot app which will generate you a token.
+
+#### SLACK_CHANNEL_ID
+The Slack channel ID where your notifications should appear.
+
+#### DAYS_BEFORE
+The amount days how old your PR is. 
+
+
