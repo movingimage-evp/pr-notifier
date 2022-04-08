@@ -110,7 +110,7 @@ func main() {
 					log.Fatal(err)
 				}
 
-				channel, err := slackClient.GetConversationInfo(channelID, false)
+				channel, err := slackClient.GetConversationInfoContext(ctx, channelID, false)
 
 				if err != nil {
 					log.Fatal(err)
