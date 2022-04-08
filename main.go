@@ -97,20 +97,26 @@ func main() {
 	for _, pr := range prList {
 		if pr.CreatedAt.Before(now.AddDate(0, 0, daysBeforeConverted)) {
 			if pr.Draft == false && pr.hasPendingReviewers() {
-				message := fmt.Sprintf("PR %s has open reviewers %s. Please go to %s", pr.Title, pr.Reviewers, pr.HtmlUrl)
-				log.Println(message)
+				message := fmt.Sprintf("PR %s has open reviewers `%s`. Please go to %s", pr.Title, pr.Reviewers, pr.HtmlUrl)
 
 				messageOption := []slack.MsgOption{
 					slack.MsgOptionUsername("PR notifier"),
 					slack.MsgOptionText(message, true),
 				}
 
-				_, _, err = slackClient.PostMessageContext(ctx, slackChannelId, messageOption...)
+				channelID, _, err := slackClient.PostMessageContext(ctx, slackChannelId, messageOption...)
 
 				if err != nil {
 					log.Fatal(err)
 				}
 
+				channel, err := slackClient.GetConversationInfo(channelID, false)
+
+				if err != nil {
+					log.Fatal(err)
+				}
+
+				fmt.Printf("Message for pull request '%s' successfully sent message to channel %s\n", pr.Title, channel.Name)
 				time.Sleep(100 * time.Millisecond)
 			}
 		}
