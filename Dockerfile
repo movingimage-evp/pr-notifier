@@ -1,20 +1,14 @@
-ARG GO_VERSION=1.18.0
-
-FROM golang:${GO_VERSION}-buster AS build_base
-
-WORKDIR /build
-COPY . /build
-RUN go mod download && CGO_ENABLED=0 GOOS=linux go build -x -installsuffix cgo -o pr-notifier .
-
-# Build the Go app
-RUN go build -o ./out/pr-notifier .
-
-FROM ubuntu:latest
-
-RUN set -x && apt-get update && \
-  DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates && \
-  rm -rf /var/lib/apt/lists/*
+FROM golang:1.18 as builder
 
 WORKDIR /app
-COPY --from=build_base /build/pr-notifier .
-ENTRYPOINT ["./pr-notifier"]
+COPY . /app
+
+RUN go get -d -v
+
+RUN CGO_ENABLED=0 go build -ldflags="-w -s" -v -o app .
+
+FROM gcr.io/distroless/static
+
+COPY --from=builder /app/app /app
+
+ENTRYPOINT ["/app"]
