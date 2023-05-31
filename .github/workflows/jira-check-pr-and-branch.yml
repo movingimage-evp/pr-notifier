@@ -1,0 +1,38 @@
+name: Jira Ticket in Branch- and PR name?
+on:
+  pull_request:
+    types: [edited, opened, synchronize, reopened]
+
+env:
+  BRANCH_NAME: ${{ github.head_ref }}
+  CONTAINS_PREFIX: 'False'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    name: Jira Ticket in Branch- and PR name?
+    steps:
+    - name: check for automation in PR
+      shell: bash
+      run: |
+        echo $BRANCH_NAME
+        PREFIX=("renovate" "dependabot" "snyk")
+        for x in "${PREFIX[@]}"; do if [[ $BRANCH_NAME =~ $x ]]; then echo CONTAINS_PREFIX=TRUE >> $GITHUB_ENV; fi; done
+    - name: Login
+      uses: atlassian/gajira-login@v3
+      if: env.CONTAINS_PREFIX == 'FALSE'
+      env:
+        JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
+        JIRA_USER_EMAIL: ${{ secrets.JIRA_USER_EMAIL }}
+        JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+    - name: Find Jira Ticket in Branch
+      uses: movingimage-evp/gajira-find-issue-key@v3
+      if: env.CONTAINS_PREFIX == 'FALSE'
+      with:
+        string: ${{ github.head_ref }}
+
+    - name: Find Jira Ticket in PR Titel
+      uses: movingimage-evp/gajira-find-issue-key@v3
+      if: env.CONTAINS_PREFIX == 'FALSE'
+      with:
+        string: ${{ github.event.pull_request.title }}
