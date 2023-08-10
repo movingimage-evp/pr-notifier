@@ -7,6 +7,10 @@ env:
   BRANCH_NAME: ${{ github.head_ref }}
   CONTAINS_PREFIX: 'False'
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   task-check:
     runs-on: ubuntu-latest
