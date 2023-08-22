@@ -47,4 +47,3 @@ jobs:
       if: env.CONTAINS_PREFIX == 'FALSE'
       with:
         string: ${{ github.event.pull_request.title }}
-
