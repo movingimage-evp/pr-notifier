@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     name: Tasks Completed
     steps:
-      - uses: kentaro-m/task-completed-checker-action@v0.1.2
+      - uses: kentaro-m/task-completed-checker-action@2ddb65fdd5577bae4a8e82e0564e459677aec893 # v0.1.2
         with:
           repo-token: "${{ secrets.GITHUB_TOKEN }}"
   jira-check:
@@ -30,20 +30,20 @@ jobs:
         PREFIX=("renovate" "dependabot" "snyk")
         for x in "${PREFIX[@]}"; do if [[ $BRANCH_NAME =~ $x ]]; then echo CONTAINS_PREFIX=TRUE >> $GITHUB_ENV; fi; done
     - name: Login
-      uses: atlassian/gajira-login@v3
+      uses: atlassian/gajira-login@45fd029b9f1d6d8926c6f04175aa80c0e42c9026 # v3.0.1
       if: env.CONTAINS_PREFIX == 'FALSE'
       env:
         JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
         JIRA_USER_EMAIL: ${{ secrets.JIRA_USER_EMAIL }}
         JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
     - name: Find Jira Ticket in Branch
-      uses: movingimage-evp/gajira-find-issue-key@v3
+      uses: movingimage-evp/gajira-find-issue-key@7d11fdc500b3b69d3edd797e9f1d619b89f8dafc # v3
       if: env.CONTAINS_PREFIX == 'FALSE'
       with:
         string: ${{ github.head_ref }}
 
     - name: Find Jira Ticket in PR Titel
-      uses: movingimage-evp/gajira-find-issue-key@v3
+      uses: movingimage-evp/gajira-find-issue-key@7d11fdc500b3b69d3edd797e9f1d619b89f8dafc # v3
       if: env.CONTAINS_PREFIX == 'FALSE'
       with:
         string: ${{ github.event.pull_request.title }}
