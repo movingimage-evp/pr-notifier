@@ -110,13 +110,19 @@ func main() {
 					log.Fatal(err)
 				}
 
-				channel, err := slackClient.GetConversationInfoContext(ctx, channelID, false)
+				// Updated part for GetConversationInfoContext
+				channelInfoInput := &slack.GetConversationInfoInput{
+					ChannelID:      channelID,
+					IncludeLocale:  false,
+				}
+
+				channel, err := slackClient.GetConversationInfoContext(ctx, channelInfoInput)
 
 				if err != nil {
 					log.Fatal(err)
 				}
 
-				fmt.Printf("Message for pull request '%s' successfully sent message to channel %s\n", pr.Title, channel.Name)
+				fmt.Printf("Message for pull request '%s' successfully sent to channel %s\n", pr.Title, channel.Name)
 				time.Sleep(100 * time.Millisecond)
 			}
 		}
