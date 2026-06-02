@@ -18,7 +18,7 @@ jobs:
           node-version: "24.16.0"
 
       - name: Run Snyk Security Scanner
-        uses: movingimage-evp/github-actions/security/setup@4167982277ce5b9a6090a13fc9fe353d6a62ec8f # main
+        uses: movingimage-evp/github-actions/security/setup@b64e5a5189d96dd5b98f94444a5b09f8d9075b6e # main
         with:
           github-packages-token: ${{ secrets.PACKAGES_MI_MAVEN_REPOSITORY_ACCESS_TOKEN }}
           snyk-token: ${{ secrets.SNYK_API_KEY }}
