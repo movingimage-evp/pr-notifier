@@ -36,13 +36,8 @@ jobs:
         JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
         JIRA_USER_EMAIL: ${{ secrets.JIRA_USER_EMAIL }}
         JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
-    - name: Find Jira Ticket in Branch
-      uses: movingimage-evp/gajira-find-issue-key@7d11fdc500b3b69d3edd797e9f1d619b89f8dafc # v3
-      if: env.CONTAINS_PREFIX == 'FALSE'
-      with:
-        string: ${{ github.head_ref }}
 
-    - name: Find Jira Ticket in PR Titel
+    - name: Find Jira Ticket in PR Title
       uses: movingimage-evp/gajira-find-issue-key@7d11fdc500b3b69d3edd797e9f1d619b89f8dafc # v3
       if: env.CONTAINS_PREFIX == 'FALSE'
       with:
