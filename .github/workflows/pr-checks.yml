@@ -27,7 +27,7 @@ jobs:
       shell: bash
       run: |
         echo $BRANCH_NAME
-        PREFIX=("renovate" "dependabot" "snyk")
+        PREFIX=("renovate" "dependabot" "snyk" "actions-up")
         for x in "${PREFIX[@]}"; do if [[ $BRANCH_NAME =~ $x ]]; then echo CONTAINS_PREFIX=TRUE >> $GITHUB_ENV; fi; done
     - name: Login
       uses: atlassian/gajira-login@45fd029b9f1d6d8926c6f04175aa80c0e42c9026 # v3.0.1
