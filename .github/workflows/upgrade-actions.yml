@@ -1,143 +1,15 @@
 name: Check for outdated GitHub Actions
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
-  # New releases appear independently of this repo's commits, so only a
-  # time-based trigger notices them. Mon/Wed/Fri 03:00 UTC.
-  schedule:
-    - cron: '0 3 * * 1,3,5'
-  # Neither of these can be a pull_request trigger: there the checkout is the
-  # PR's merge ref, so applying updates would fold that PR's own changes into
-  # the update branch.
-  workflow_dispatch:
-    inputs:
-      force:
-        description: 'Force: ignore the release cool-down and refresh the update branch'
-        type: boolean
-        default: false
+    types: [edited, opened, synchronize, reopened]
 
-# Without an explicit block these calls fail when the org default is read-only.
-permissions:
-  contents: read
-  pull-requests: write
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
-env:
-  # Not under `renovate/`: that is Renovate's branchPrefix and pruneStaleBranches
-  # is on, so it would delete this branch and autoclose the pull request.
-  BOT_BRANCH: actions-up/upgrade-github-actions
-  BOT_EMAIL: jenkins.admin@movingimage.com
-  BOT_NAME: Admin-Jenkins
-  # Toggled on human PRs to flag that they carry outdated pins.
-  LABEL: outdated-actions
-  # Applied to the bot's own PR. `maintenance` matches how Renovate categorises
-  # the same kind of work.
-  PR_LABELS: outdated-actions,maintenance
-
-# One job with event-gated steps, so the report generator below exists once.
 jobs:
   check-actions:
     name: Check for GHA updates
     runs-on: ubuntu-latest
-    env:
-      # actions-up's own default, but stated explicitly: check and apply are two
-      # separate invocations, and a version skew between them would mean applying
-      # updates the report never listed. Unset on schedule/pull_request, so those
-      # keep the cool-down.
-      MIN_AGE: ${{ inputs.force && '0' || '1' }}
-      # Also lifts the "a closed pull request means these updates were rejected"
-      # rule, so a manual run can reopen one.
-      FORCE: ${{ inputs.force && 'true' || 'false' }}
     steps:
-      # Ahead of the checkout: never apply updates we will not be allowed to push.
-      - name: Preflight - token and branch ownership
-        id: bot
-        # An allowlist, so a trigger added to `on:` later is not enrolled by
-        # default into the path that force-pushes with a PAT.
-        if: contains(fromJSON('["schedule", "workflow_dispatch"]'), github.event_name)
-        env:
-          GH_TOKEN: ${{ secrets.WORKFLOW_DISPATCH_TOKEN }}
-          GH_REPO: ${{ github.repository }}
-          BASE_BRANCH: ${{ github.event.repository.default_branch }}
-        run: |
-          set -euo pipefail
-
-          if [ -z "${GH_TOKEN:-}" ]; then
-            echo "::error title=Missing secret::WORKFLOW_DISPATCH_TOKEN is not available to this repository. The default GITHUB_TOKEN cannot push changes to .github/workflows/**, so the update branch cannot be created without it."
-            exit 1
-          fi
-
-          # Over the API rather than git history, so the checkout can stay shallow.
-          # The tree SHA rides along on this response, sparing a later git fetch.
-          if ! BRANCH_JSON=$(gh api "repos/${GH_REPO}/branches/${BOT_BRANCH}" \
-            --jq '.commit.sha, .commit.commit.tree.sha' 2>"$RUNNER_TEMP/branch-lookup.err"); then
-            # Only a confirmed 404 means "no branch yet". Auth, rate-limit and 5xx
-            # failures must be red: read as "no branch", they would skip the
-            # ownership check and leave a stale branch undeleted on a no-update run,
-            # while the step still reported success. On an HTTP error gh forwards the
-            # response body on stdout - the --jq goes unapplied - and GitHub's error
-            # bodies carry the status as a field, so the code is read rather than its
-            # prose. A non-JSON body (proxy error page) fails the test, hence red.
-            if ! printf '%s' "$BRANCH_JSON" | jq -e '.status == "404"' >/dev/null 2>&1; then
-              echo "::error title=Branch lookup failed::Could not determine whether ${BOT_BRANCH} exists: $(tr '\n' ' ' < "$RUNNER_TEMP/branch-lookup.err"). Refusing to guess."
-              exit 1
-            fi
-            echo "Branch ${BOT_BRANCH} does not exist yet - it will be created."
-            {
-              echo "remote-sha="
-              echo "remote-tree="
-              echo "proceed=true"
-            } >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          {
-            echo "remote-sha=$(printf '%s' "$BRANCH_JSON" | sed -n 1p)"
-            echo "remote-tree=$(printf '%s' "$BRANCH_JSON" | sed -n 2p)"
-          } >> "$GITHUB_OUTPUT"
-
-          # Every commit the branch adds must be ours - including a merge a human
-          # made from the base branch. No `|| true`: an API failure would yield no
-          # authors, read as "nothing foreign", and clobber somebody's work.
-          if ! AUTHORS=$(gh api "repos/${GH_REPO}/compare/${BASE_BRANCH}...${BOT_BRANCH}" \
-            --jq '.commits[].commit.author.email'); then
-            echo "::error title=Ownership check failed::Could not compare ${BASE_BRANCH}...${BOT_BRANCH}. Refusing to touch the branch."
-            exit 1
-          fi
-
-          # Here `|| true` is right: grep exits 1 when every commit is ours.
-          FOREIGN=$(printf '%s\n' "$AUTHORS" | grep -v "^${BOT_EMAIL}$" | grep -v '^$' || true)
-
-          if [ -n "$FOREIGN" ]; then
-            echo "proceed=false" >> "$GITHUB_OUTPUT"
-            echo "::warning title=Update branch not touched::${BOT_BRANCH} has commits from $(printf '%s' "$FOREIGN" | paste -sd ',' -). Leaving it alone."
-            {
-              echo "### GitHub Actions update skipped"
-              echo ""
-              echo "\`${BOT_BRANCH}\` contains commits that are not from \`${BOT_EMAIL}\`:"
-              echo ""
-              printf '%s\n' "$FOREIGN" | sed 's/^/- /'
-              echo ""
-              echo "The branch was left untouched. Merge or delete it to let this workflow manage it again."
-            } >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
-
-          echo "proceed=true" >> "$GITHUB_OUTPUT"
-          echo "${BOT_BRANCH} exists and only has commits from ${BOT_EMAIL} - safe to refresh."
-
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          # Only the update path needs the PAT (GITHUB_TOKEN cannot push workflow
-          # files); checkout persists whatever it gets for the whole job.
-          token: ${{ github.event_name == 'pull_request' && secrets.GITHUB_TOKEN || secrets.WORKFLOW_DISPATCH_TOKEN }}
-          # The update path must work off the default branch: dispatching from a
-          # feature branch would otherwise fold its commits into the update branch.
-          ref: ${{ github.event_name == 'pull_request' && github.ref || github.event.repository.default_branch }}
 
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -145,612 +17,294 @@ jobs:
           node-version: '24'
 
       - name: Install actions-up
-        run: npm install -g actions-up@1.16.0
+        run: npm install -g actions-up
 
       - name: Run actions-up check
         id: actions-check
-        env:
-          # Unauthenticated, actions-up hits the 60 req/hr limit, finds no updates,
-          # and we report "up to date" — a silent false negative.
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          set -euo pipefail
+          echo "## GitHub Actions Update Check" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
 
-          echo "Running actions-up to check for updates (--min-age ${MIN_AGE})..."
+          # Initialize variables
+          HAS_UPDATES=false
+          UPDATE_COUNT=0
 
-          # No `|| true`: a check that cannot run must be red, not a report
-          # claiming everything is current.
-          if ! actions-up --min-age "$MIN_AGE" --json > actions-up-report.json; then
-            echo "::error::actions-up failed to produce a report. See the log above."
-            exit 1
+          # Run actions-up and capture output (force no color output)
+          echo "Running actions-up to check for updates..."
+
+          if [ "${{ inputs.check-mode }}" == "dry-run" ]; then
+            NO_COLOR=1 FORCE_COLOR=0 actions-up --dry-run > actions-up-raw.txt 2>&1 || true
+          else
+            # Run in non-interactive mode to just check
+            NO_COLOR=1 FORCE_COLOR=0 actions-up --dry-run > actions-up-raw.txt 2>&1 || true
           fi
 
-          node --input-type=module <<'EOF'
-          import { readFileSync, writeFileSync, appendFileSync } from 'node:fs'
+          # Strip ANSI color codes from the output
+          sed -i 's/\x1b\[[0-9;]*m//g' actions-up-raw.txt
 
-          const report = JSON.parse(readFileSync('actions-up-report.json', 'utf8'))
-          const summary = report.summary ?? {}
-          const updates = report.updates ?? []
-          const totalUpdates = summary.totalUpdates ?? updates.length
+          # Also remove any other control characters
+          sed -i 's/\x1b\[[0-9;]*[a-zA-Z]//g' actions-up-raw.txt
 
-          // Both exit 0 reporting zero updates, which would render as "up to date"
-          // and delete the branch - yet nothing was actually checked.
-          if (report.status === 'no-actions-found' || report.status === 'nothing-to-check') {
-            console.log(
-              `::error title=Nothing was checked::actions-up reported status '${report.status}'`
-                + ' - no action references were examined, so "up to date" cannot be trusted.',
-            )
-            process.exit(1)
-          }
+          # Parse the output to detect updates
+          # Look for patterns like "v3 → v4" or "would be updated"
+          if grep -E "(→|would be updated|Update available)" actions-up-raw.txt > /dev/null 2>&1; then
+            HAS_UPDATES=true
+            # Count the number of updates (lines with arrows)
+            UPDATE_COUNT=$(grep -c "→" actions-up-raw.txt || echo "0")
+          fi
 
-          const short = value =>
-            (/^[0-9a-f]{40}$/i.test(value ?? '') ? value.slice(0, 7) : value)
+          # Create formatted output
+          if [ "$HAS_UPDATES" = true ]; then
+            echo "⚠️ Found $UPDATE_COUNT GitHub Actions with available updates" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "<details>" >> $GITHUB_STEP_SUMMARY
+            echo "<summary>Click to see details</summary>" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            cat actions-up-raw.txt >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            echo "</details>" >> $GITHUB_STEP_SUMMARY
 
-          // The version behind a SHA pin exists only as the trailing comment in the
-          // workflow file; the JSON report does not carry it. So read it back.
-          const fileCache = new Map()
-          const currentTag = action => {
-            if (!action?.file || !action.line) return null
-            try {
-              if (!fileCache.has(action.file)) {
-                fileCache.set(action.file, readFileSync(action.file, 'utf8').split('\n'))
-              }
-              const line = fileCache.get(action.file)[action.line - 1] ?? ''
-              // Unanchored so `# v4.1.0 (pinned)` still parses, but it must look
-              // like a version: `# 1st stage` must not read as version 1.
-              return line.match(/#\s*(v\d[^\s]*|\d+(?:\.\d+)+)/)?.[1] ?? null
-            } catch {
-              // A moved file degrades to "no tag" rather than failing the run.
-              return null
-            }
-          }
+            # Create detailed markdown report with better formatting
+            {
+              echo "## 🔄 GitHub Actions Update Report"
+              echo ""
 
-          const refCell = (ref, tag, bold = false) => {
-            const hash = short(ref)
-            const wrap = value => (bold ? `**\`${value}\`**` : `\`${value}\``)
-            if (hash && tag && hash !== tag) return `${wrap(hash)} (${tag})`
-            if (hash || tag) return wrap(hash ?? tag)
-            return '-'
-          }
+              # Extract summary information
+              TOTAL_ACTIONS=$(grep -oP 'Found \K[0-9]+(?= actions)' actions-up-raw.txt | head -1 || echo "0")
+              BREAKING_UPDATES=$(grep -oP '\(([0-9]+) breaking\)' actions-up-raw.txt | grep -oP '[0-9]+' || echo "0")
 
-          // Partial tags are coerced like actions-up coerces them: `v3` must read as
-          // 3.0.0, else a `# v3` pin moving to v7 looks like a patch.
-          const semver = value => {
-            // A commit SHA can begin with digits, so it must never be coerced.
-            if (!value || /^[0-9a-f]{7,40}$/i.test(value)) return null
-            const parts = value.match(/^v?(\d+)(?:\.(\d+))?(?:\.(\d+))?/)
-            return parts ? parts.slice(1, 4).map(part => Number(part ?? 0)) : null
-          }
+              echo "### Summary"
+              echo "- **Total actions scanned:** $TOTAL_ACTIONS"
+              echo "- **Updates available:** $UPDATE_COUNT"
+              if [ "$BREAKING_UPDATES" != "0" ]; then
+                echo "- **⚠️ Breaking changes:** $BREAKING_UPDATES"
+              fi
+              echo ""
 
-          // A rank, not an icon, so ordering and the breaking filter do not depend on
-          // emoji. Rank 3 is "not comparable" and has no fallback: actions-up leaves
-          // isBreaking false for every SHA pin, so trusting it renders majors green.
-          const ICONS = ['🔴', '🟡', '🟢', '⚪']
-          const bumpRank = (update, tag) => {
-            const from = semver(tag) ?? semver(update.currentVersion)
-            const to = semver(update.latestVersion)
-            if (!from || !to) return 3
-            if (from[0] !== to[0]) return 0
-            if (from[1] !== to[1]) return 1
-            return 2
-          }
+              echo "### 📋 Available Updates"
+              echo ""
 
-          const releaseCell = update => {
-            const { name } = update.action ?? {}
-            const version = update.latestVersion
-            if (!name || !version) return '-'
-            // action.name is the whole `uses` prefix, so a sub-path action must be
-            // trimmed to owner/repo - releases live on the repo, not the subdirectory.
-            const [owner, repo] = name.split('/')
-            if (!owner || !repo) return '-'
-            return `[Release notes](https://github.com/${owner}/${repo}/releases/tag/${version})`
-          }
+              # Format the updates in a table
+              echo "| Workflow File | Action | Current | Available | Type | Release Notes |"
+              echo "|--------------|--------|---------|-----------|------|---------------|"
 
-          // The same action pinned in several workflows collapses to one row plus a
-          // count.
-          const groups = new Map()
-          for (const update of updates) {
-            const name = update.action?.name ?? 'unknown'
-            const ref = update.currentVersion ?? update.action?.version
-            const key = `${name}@${ref}@${update.latestVersion}`
-            const existing = groups.get(key)
-            if (existing) {
-              existing.count += 1
-              continue
-            }
-            const tag = currentTag(update.action)
-            groups.set(key, {
-              rank: bumpRank(update, tag),
-              current: refCell(ref, tag),
-              latest: refCell(update.latestSha ?? update.latestVersion, update.latestVersion, true),
-              release: releaseCell(update),
-              count: 1,
-              name,
-            })
-          }
+              # Parse each update line
+              grep "→" actions-up-raw.txt | while IFS= read -r line; do
+                # Extract workflow file path (remove leading path)
+                if echo "$line" | grep -q "\.github/workflows/"; then
+                  PREV_FILE=$(echo "$line" | grep -oP '\.github/workflows/[^:]+' | head -1)
+                fi
 
-          const rows = [...groups.values()].sort(
-            (a, b) => a.rank - b.rank || a.name.localeCompare(b.name),
-          )
+                # Skip file path lines, process only action updates
+                if echo "$line" | grep -q ": .* → "; then
+                  # Extract action name and versions
+                  ACTION=$(echo "$line" | cut -d: -f1 | xargs)
+                  CURRENT=$(echo "$line" | grep -oP 'v[0-9]+(\.[0-9]+)*' | head -1)
+                  NEW=$(echo "$line" | grep -oP '→ \Kv[0-9]+(\.[0-9]+)*' | head -1)
 
-          // From the ranks, not summary.totalBreakingUpdates: that reports 0 even for
-          // v6 -> v7 SHA pins. Counted per pin, since that is what has to be edited.
-          const breakingRows = rows.filter(row => row.rank === 0)
-          const totalBreaking = breakingRows.reduce((sum, row) => sum + row.count, 0)
+                  # Determine if it's a breaking change
+                  CURRENT_MAJOR=$(echo "$CURRENT" | grep -oP 'v\K[0-9]+' || echo "0")
+                  NEW_MAJOR=$(echo "$NEW" | grep -oP 'v\K[0-9]+' || echo "0")
 
-          const lines = ['<!-- actions-up-report -->', '']
+                  if [ "$CURRENT_MAJOR" != "$NEW_MAJOR" ]; then
+                    TYPE="⚠️ Breaking"
+                    # Generate release URL
+                    # Handle both owner/repo and just repo formats
+                    if echo "$ACTION" | grep -q "/"; then
+                      REPO_PATH="$ACTION"
+                    else
+                      # For actions without owner, assume it's under 'actions' org
+                      REPO_PATH="actions/$ACTION"
+                    fi
+                    RELEASE_URL="https://github.com/${REPO_PATH}/releases/tag/${NEW}"
+                    RELEASE_LINK="[📄 Release](${RELEASE_URL})"
+                  else
+                    TYPE="✅ Minor"
+                    RELEASE_LINK="-"
+                  fi
 
-          if (totalUpdates > 0) {
-            lines.push(
-              '## Outdated GitHub Actions',
-              '',
-              '### Summary',
-              `- **Actions checked:** ${summary.totalActionsChecked ?? 'unknown'}`,
-              `- **Updates available:** ${totalUpdates}`,
-            )
-            if (totalBreaking > 0) {
-              lines.push(`- **Breaking (major) updates:** ${totalBreaking}`)
-            }
-            lines.push('', '### Available updates', '')
-            lines.push('| Action | Current | Available | Breaking | Used | Release Notes |')
-            lines.push('|---|---|---|---|:-:|---|')
+                  # Output table row
+                  WORKFLOW_NAME=$(basename "$PREV_FILE" 2>/dev/null || echo "workflow.yml")
+                  echo "| \`$WORKFLOW_NAME\` | $ACTION | $CURRENT | **$NEW** | $TYPE | $RELEASE_LINK |"
+                fi
+              done
 
-            for (const row of rows) {
-              lines.push(
-                `| \`${row.name}\` `
-                  + `| ${row.current} `
-                  + `| ${row.latest} `
-                  + `| ${ICONS[row.rank]} `
-                  + `| ×${row.count} `
-                  + `| ${row.release} |`,
-              )
-            }
+              echo ""
+              echo "### 📝 How to Update"
+              echo ""
+              echo "You have several options to update these actions:"
+              echo ""
+              echo "#### Option 1: Automatic Update (Recommended)"
+              echo '```bash'
+              echo "# Run this command locally in your repository"
+              echo "npx actions-up"
+              echo '```'
+              echo ""
+              echo "#### Option 2: Manual Update"
+              echo "1. Review each update in the table above"
+              echo "2. For ⚠️ breaking changes, click the Release Notes link to review changes"
+              echo "3. Edit the workflow files and update the version numbers"
+              echo "4. Test the changes in your CI/CD pipeline"
+              echo ""
+              echo "#### Option 3: Selective Update"
+              echo '```bash'
+              echo "# Update only non-breaking changes"
+              echo "npx actions-up --breaking false"
+              echo '```'
+              echo ""
 
-            lines.push('', '🔴 major · 🟡 minor · 🟢 patch · ⚪ not comparable')
+              if [ "$BREAKING_UPDATES" != "0" ]; then
+                echo "### ⚠️ Breaking Changes Warning"
+                echo ""
+                echo "This update includes **$BREAKING_UPDATES breaking change(s)**. Please review the release notes before updating:"
+                echo ""
+                grep "→" actions-up-raw.txt | while IFS= read -r line; do
+                  if echo "$line" | grep -q ": .* → "; then
+                    ACTION=$(echo "$line" | cut -d: -f1 | xargs)
+                    CURRENT=$(echo "$line" | grep -oP 'v[0-9]+' | head -1)
+                    NEW=$(echo "$line" | grep -oP '→ \Kv[0-9]+(\.[0-9]+)*' | head -1)
+                    CURRENT_MAJOR=$(echo "$CURRENT" | grep -oP '[0-9]+' || echo "0")
+                    NEW_MAJOR=$(echo "$NEW" | grep -oP '[0-9]+' || echo "0")
+                    if [ "$CURRENT_MAJOR" != "$NEW_MAJOR" ]; then
+                      # Generate release URL
+                      if echo "$ACTION" | grep -q "/"; then
+                        REPO_PATH="$ACTION"
+                      else
+                        REPO_PATH="actions/$ACTION"
+                      fi
+                      RELEASE_URL="https://github.com/${REPO_PATH}/releases/tag/${NEW}"
+                      echo "- **$ACTION**: $CURRENT → $NEW - [View Release Notes](${RELEASE_URL})"
+                    fi
+                  fi
+                done
+                echo ""
+                echo "**Important:** Breaking changes may require modifications to your workflow configuration. Always review the release notes and test thoroughly."
+                echo ""
+              fi
 
-            if (totalBreaking > 0) {
-              lines.push(
-                '',
-                '### Breaking changes',
-                '',
-                `${totalBreaking} update(s) cross a major version and may require`
-                  + ' changes to your workflow configuration. Review the release'
-                  + ' notes before updating:',
-                '',
-              )
-              for (const row of breakingRows) {
-                lines.push(
-                  `- **\`${row.name}\`**: ${row.current} → ${row.latest}`
-                    + ` — ${row.release}`,
-                )
-              }
-            }
+              echo "---"
+              echo ""
+              echo "<details>"
+              echo "<summary>📄 Raw actions-up output</summary>"
+              echo ""
+              echo '```'
+              cat actions-up-raw.txt
+              echo '```'
+              echo "</details>"
+            } > actions-up-report.md
 
-            lines.push(
-              '',
-              '### How to update',
-              '',
-              'Run this locally in the repository root and review the proposed changes:',
-              '',
-              '```bash',
-              'npx actions-up',
-              '```',
-              '',
-              'To exclude major version bumps:',
-              '',
-              '```bash',
-              'npx actions-up --mode minor',
-              '```',
-            )
-          } else {
-            lines.push(
-              '## GitHub Actions are up to date',
-              '',
-              `All ${summary.totalActionsChecked ?? 0} action reference(s) checked are`
-                + ' using the latest available versions. No action required.',
-            )
-            // Releases younger than the cool-down are dropped from the report
-            // entirely - not listed under "not checked" below - so say so, or this
-            // reads as a stronger claim than it is.
-            const minAge = report.options?.minAge ?? 0
-            if (minAge > 0) {
-              lines.push(
-                '',
-                `Releases published less than ${minAge} day(s) ago are held back by the`
-                  + ' cool-down and are not counted here. Run this workflow manually with'
-                  + ' **Force** to include them.',
-              )
-            }
-          }
+            echo "has-updates=true" >> $GITHUB_OUTPUT
+            echo "update-count=$UPDATE_COUNT" >> $GITHUB_OUTPUT
+          else
+            echo "✅ All GitHub Actions are up to date!" >> $GITHUB_STEP_SUMMARY
 
-          // Actions that were never checked would otherwise read as up to date.
-          const notChecked = [
-            ...(report.skipped ?? []).map(u => ({ ...u, why: u.skipReason ?? 'skipped' })),
-            ...(report.blockedByMode ?? []).map(u => ({ ...u, why: 'blocked by --mode' })),
-          ]
-          if (notChecked.length > 0) {
-            lines.push(
-              '',
-              '<details>',
-              `<summary>${notChecked.length} action(s) not checked</summary>`,
-              '',
-            )
-            for (const update of notChecked) {
-              lines.push(`- \`${update.action?.name ?? 'unknown'}\` — ${update.why}`)
-            }
-            lines.push('', '</details>')
-          }
+            {
+              echo "## ✅ GitHub Actions Update Report"
+              echo ""
+              echo "### All GitHub Actions in this repository are up to date!"
+              echo ""
+              echo "No action required. Your workflow files are using the latest versions of all GitHub Actions."
+            } > actions-up-report.md
 
-          // Here, not in each consumer: this file is used verbatim as both the PR
-          // comment and the PR description.
-          lines.push(
-            '',
-            '---',
-            '*Generated by [actions-up](https://github.com/azat-io/actions-up).*',
-          )
-
-          const body = lines.join('\n') + '\n'
-          writeFileSync('actions-up-report.md', body)
-
-          appendFileSync(process.env.GITHUB_STEP_SUMMARY, body)
-          appendFileSync(
-            process.env.GITHUB_OUTPUT,
-            `has-updates=${totalUpdates > 0}\n`
-              + `update-count=${totalUpdates}\n`
-              + `breaking-count=${totalBreaking}\n`,
-          )
-          EOF
+            echo "has-updates=false" >> $GITHUB_OUTPUT
+            echo "update-count=0" >> $GITHUB_OUTPUT
+          fi
 
       - name: Comment PR with updates
         if: github.event_name == 'pull_request'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
-        env:
-          HAS_UPDATES: ${{ steps.actions-check.outputs.has-updates }}
         with:
           script: |
             const fs = require('fs');
+            const report = fs.readFileSync('actions-up-report.md', 'utf8');
+            const hasUpdates = '${{ steps.actions-check.outputs.has-updates }}' === 'true';
+            const updateCount = '${{ steps.actions-check.outputs.update-count }}';
 
-            const MARKER = '<!-- actions-up-report -->';
-            const LABEL = process.env.LABEL;
-            const commentBody = fs.readFileSync('actions-up-report.md', 'utf8');
-            const hasUpdates = process.env.HAS_UPDATES === 'true';
-
-            const { owner, repo } = context.repo;
-            const issue_number = context.issue.number;
-
-            const comments = await github.paginate(github.rest.issues.listComments, {
-              owner,
-              repo,
-              issue_number,
-              per_page: 100,
+            // Check if we already commented
+            const comments = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number
             });
 
-            // The marker, not the prose, so rewording never duplicates - but only on
-            // this workflow's own comments. "Quote reply" copies the raw body, hidden
-            // HTML comment included, so a human discussing a previous report carries
-            // the marker too; matching that would rewrite their comment (this token
-            // may edit any comment in the repo) and the real report would never be
-            // posted. Author type, since the default GITHUB_TOKEN posts as a Bot -
-            // switching this step to a PAT would need this rule changed with it.
-            const existing = comments.find(comment =>
-              comment.user?.type === 'Bot' && comment.body?.includes(MARKER));
+            const botComment = comments.data.find(comment =>
+              comment.user.type === 'Bot' &&
+              comment.body.includes('GitHub Actions Update Report')
+            );
 
-            try {
-              if (existing) {
+            const commentBody = `${report}
+
+            ---
+            *🤖 Generated using [actions-up](https://github.com/azat-io/actions-up) | Last check: ${new Date().toISOString()}*`;
+
+            // Only comment if there are updates or if we previously commented
+            if (hasUpdates || botComment) {
+              if (botComment) {
+                // Update existing comment
                 await github.rest.issues.updateComment({
-                  owner,
-                  repo,
-                  comment_id: existing.id,
-                  body: commentBody,
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  comment_id: botComment.id,
+                  body: commentBody
                 });
-                core.info('Updated existing comment.');
-              } else if (hasUpdates) {
-                await github.rest.issues.createComment({
-                  owner,
-                  repo,
-                  issue_number,
-                  body: commentBody,
-                });
-                core.info('Created new comment.');
+                console.log('Updated existing comment');
               } else {
-                core.info('No updates and no previous comment - nothing to do.');
+                // Create new comment only if there are updates
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: context.issue.number,
+                  body: commentBody
+                });
+                console.log('Created new comment');
               }
-            } catch (error) {
-              // Pull requests from forks get a read-only token.
-              core.warning(`Could not write comment: ${error.message}`);
+            } else {
+              console.log('No updates found and no previous comment exists - skipping comment');
             }
 
-            const labels = await github.paginate(github.rest.issues.listLabelsOnIssue, {
-              owner,
-              repo,
-              issue_number,
-              per_page: 100,
+            // Add or update PR labels based on status
+            const labels = await github.rest.issues.listLabelsOnIssue({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number
             });
-            const hasLabel = labels.some(label => label.name === LABEL);
 
-            try {
-              if (hasUpdates && !hasLabel) {
+            const hasOutdatedLabel = labels.data.some(label => label.name === 'outdated-actions');
+
+            if (hasUpdates && !hasOutdatedLabel) {
+              // Add label if updates are found
+              try {
                 await github.rest.issues.addLabels({
-                  owner,
-                  repo,
-                  issue_number,
-                  labels: [LABEL],
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: context.issue.number,
+                  labels: ['outdated-actions']
                 });
-                core.info(`Added ${LABEL} label.`);
-              } else if (!hasUpdates && hasLabel) {
-                await github.rest.issues.removeLabel({
-                  owner,
-                  repo,
-                  issue_number,
-                  name: LABEL,
-                });
-                core.info(`Removed ${LABEL} label.`);
+                console.log('Added outdated-actions label');
+              } catch (error) {
+                console.log('Could not add label (might not exist in repo):', error.message);
               }
-            } catch (error) {
-              // The label may not exist in the repo, which is not a failure.
-              core.warning(`Could not update labels: ${error.message}`);
+            } else if (!hasUpdates && hasOutdatedLabel) {
+              // Remove label if no updates
+              try {
+                await github.rest.issues.removeLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: context.issue.number,
+                  name: 'outdated-actions'
+                });
+                console.log('Removed outdated-actions label');
+              } catch (error) {
+                console.log('Could not remove label:', error.message);
+              }
             }
 
       - name: Fail if outdated actions found
-        if: |
-          github.event_name == 'pull_request'
-            && steps.actions-check.outputs.has-updates == 'true'
-        env:
-          UPDATE_COUNT: ${{ steps.actions-check.outputs.update-count }}
-          BREAKING_COUNT: ${{ steps.actions-check.outputs.breaking-count }}
+        if: steps.actions-check.outputs.has-updates == 'true'
         run: |
-          set -euo pipefail
-
-          # Annotations render plain text - :emoji: shortcodes would show literally.
-          DETAIL="${UPDATE_COUNT:-0} outdated GitHub Action(s)"
-          if [ "${BREAKING_COUNT:-0}" -gt 0 ]; then
-            DETAIL="$DETAIL, ${BREAKING_COUNT} of them breaking (major)"
-          fi
-
-          echo "::error title=Outdated GitHub Actions::Found ${DETAIL}. Update them before merging - see the PR comment for details."
+          echo "::error:: :rotating_light: Found ${{ steps.actions-check.outputs.update-count }} outdated GitHub Actions. Please update them before merging. :rotating_light:"
+          echo ""
+          echo "You can update them by running: npx actions-up"
+          echo "Or manually update the versions in your workflow files."
           exit 1
-
-      - name: Apply updates and push branch
-        id: push
-        if: |
-          contains(fromJSON('["schedule", "workflow_dispatch"]'), github.event_name)
-            && steps.bot.outputs.proceed == 'true'
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_TOKEN: ${{ secrets.WORKFLOW_DISPATCH_TOKEN }}
-          GH_REPO: ${{ github.repository }}
-          GPG_KEY: ${{ secrets.COMMIT_SIGNATURE_GPG_KEY }}
-          HAS_UPDATES: ${{ steps.actions-check.outputs.has-updates }}
-          UPDATE_COUNT: ${{ steps.actions-check.outputs.update-count }}
-          BREAKING_COUNT: ${{ steps.actions-check.outputs.breaking-count }}
-          REMOTE_SHA: ${{ steps.bot.outputs.remote-sha }}
-          REMOTE_TREE: ${{ steps.bot.outputs.remote-tree }}
-        run: |
-          set -euo pipefail
-
-          # Named for what the next step asks - "is there a branch carrying these
-          # updates?" - so pushing and finding it already there share one value.
-          branch_ready() { echo "branch-ready=$1" >> "$GITHUB_OUTPUT"; }
-
-          # The generated reports sit in the repo root, so a plain `git status
-          # --porcelain` is never empty. actions-up only rewrites tracked files.
-          changed() { git status --porcelain --untracked-files=no; }
-
-          if [ "$HAS_UPDATES" != 'true' ]; then
-            branch_ready false
-            if [ -n "$REMOTE_SHA" ]; then
-              # The cool-down drops young releases from the report altogether, so
-              # "no updates" can mean "one is waiting". Deleting the branch on that
-              # would close its pull request and reopen it a day later. Only worth
-              # a second API pass in this branch-exists-but-nothing-to-do case.
-              if [ "${MIN_AGE:-0}" != '0' ] \
-                && actions-up --min-age 0 --json > actions-up-fresh.json \
-                && [ "$(node -e 'const r=require("./actions-up-fresh.json");process.stdout.write(String(r.summary?.totalUpdates ?? 0))')" != '0' ]; then
-                echo "::notice title=Update branch kept::Updates exist but are inside the ${MIN_AGE}-day cool-down. Keeping ${BOT_BRANCH}."
-                echo "Updates are waiting on the ${MIN_AGE}-day cool-down - kept \`${BOT_BRANCH}\`. Re-run with **Force** to apply them now." >> "$GITHUB_STEP_SUMMARY"
-                exit 0
-              fi
-
-              # Deleting the branch closes its PR, so a stale "please update" PR
-              # cannot outlive the updates it asked for. Failing to is not fatal.
-              #
-              # Under the same lease as the update push below: minutes pass between
-              # the ownership check and here (install, then a full API pass), and a
-              # commit somebody pushed inside that window would be deleted along with
-              # the branch. git enforces the lease on a delete too, so a moved branch
-              # is rejected rather than dropped.
-              if git push --force-with-lease="refs/heads/${BOT_BRANCH}:${REMOTE_SHA}" \
-                origin ":refs/heads/${BOT_BRANCH}"; then
-                echo "Everything is current - deleted the obsolete ${BOT_BRANCH}."
-                echo "Actions are up to date. Removed the stale \`${BOT_BRANCH}\` branch." >> "$GITHUB_STEP_SUMMARY"
-              else
-                # Same question as the push path asks: only "somebody moved it" is
-                # benign. Either way the branch stays, so neither is fatal.
-                NOW_SHA=$(gh api "repos/${GH_REPO}/branches/${BOT_BRANCH}" --jq '.commit.sha' 2>/dev/null || true)
-                if [ -n "$NOW_SHA" ] && [ "$NOW_SHA" != "$REMOTE_SHA" ]; then
-                  echo "::warning title=Update branch not deleted::${BOT_BRANCH} was pushed to while this run was working. Leaving it and its pull request alone."
-                  echo "Actions are up to date, but \`${BOT_BRANCH}\` changed mid-run - kept it rather than deleting somebody's commit." >> "$GITHUB_STEP_SUMMARY"
-                else
-                  echo "::warning::Actions are up to date but ${BOT_BRANCH} could not be deleted."
-                  echo "Actions are up to date. \`${BOT_BRANCH}\` could not be deleted - remove it manually." >> "$GITHUB_STEP_SUMMARY"
-                fi
-              fi
-            else
-              echo "Everything is current - nothing to do."
-              echo "GitHub Actions are up to date. No branch needed." >> "$GITHUB_STEP_SUMMARY"
-            fi
-            exit 0
-          fi
-
-          # --json cannot be combined with --yes, hence the separate pass above.
-          # --style defaults to sha, keeping the `@<sha> # vX.Y.Z` convention.
-          # Same --min-age as the check above: a different threshold here would
-          # apply updates the report never listed.
-          RC=0
-          actions-up --min-age "$MIN_AGE" --yes || RC=$?
-          if [ "$RC" -ne 0 ]; then
-            # Files already written are not a reason to continue: actions-up rewrites
-            # one file per promise and awaits them together, so a failure part-way
-            # leaves an arbitrary subset on disk. Committing that would open a pull
-            # request whose report and counts - both from the check pass above - claim
-            # every update landed. Nothing is pushed, so the next run simply retries.
-            if [ -n "$(changed)" ]; then
-              echo "::error title=Updates partially applied::actions-up --yes exited ${RC} after modifying $(changed | wc -l | tr -d ' ') file(s). The working tree may hold only some of the ${UPDATE_COUNT} reported update(s), so nothing was pushed."
-              echo "\`actions-up --yes\` failed part-way through writing the updates - nothing pushed. See the log." >> "$GITHUB_STEP_SUMMARY"
-            else
-              echo "::error::actions-up --yes exited ${RC} without changing any files."
-            fi
-            exit 1
-          fi
-
-          if [ -z "$(changed)" ]; then
-            branch_ready false
-            # The report was an earlier API pass, so --min-age or a yanked release
-            # can legitimately leave nothing to write.
-            echo "::warning::${UPDATE_COUNT} update(s) reported but no files changed."
-            echo "${UPDATE_COUNT} update(s) reported, but \`actions-up --yes\` changed nothing." >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
-
-          git config user.name "$BOT_NAME"
-          git config user.email "$BOT_EMAIL"
-
-          # Inline rather than a third-party action this workflow would then have to
-          # keep updated itself.
-          if [ -n "${GPG_KEY:-}" ]; then
-            printf '%s' "$GPG_KEY" | gpg --batch --quiet --import
-            KEY_ID=$(gpg --list-secret-keys --with-colons | awk -F: '/^sec:/ { print $5; exit }')
-            git config user.signingkey "$KEY_ID"
-            git config commit.gpgsign true
-          else
-            echo "::warning::COMMIT_SIGNATURE_GPG_KEY is not set - committing unsigned."
-          fi
-
-          # Off the freshly checked-out base each run, so the branch stays rebased
-          # rather than accumulating superseded update commits.
-          git checkout -B "$BOT_BRANCH"
-          # -u, not -A: untracked would sweep the generated reports into the commit.
-          git add -u
-
-          SUBJECT="chore(deps): update github actions"
-          BODY="${UPDATE_COUNT} action reference(s) updated."
-          if [ "${BREAKING_COUNT:-0}" -gt 0 ]; then
-            BODY="$BODY ${BREAKING_COUNT} of them cross a major version."
-          fi
-          git commit --quiet -m "$SUBJECT" -m "$BODY"
-
-          # Identical content means the open PR already says all this; pushing would
-          # only churn it. REMOTE_TREE came from preflight, so this costs no fetch.
-          if [ "$(git rev-parse 'HEAD^{tree}')" = "$REMOTE_TREE" ]; then
-            echo "${BOT_BRANCH} already carries these exact updates - not pushing."
-            branch_ready true
-            # Nothing new, so a PR closed on purpose stays closed - see next step.
-            echo "pushed=false" >> "$GITHUB_OUTPUT"
-            echo "\`${BOT_BRANCH}\` already up to date - left as is." >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
-
-          # The lease carries the preflight SHA, so a push that landed in between
-          # aborts here. An explicit SHA needs no local object, hence no deep fetch.
-          LEASE="refs/heads/${BOT_BRANCH}:${REMOTE_SHA}"
-          if ! git push --force-with-lease="$LEASE" origin "HEAD:refs/heads/${BOT_BRANCH}"; then
-            # Ask what the branch is now rather than classifying git's rejection
-            # prose. Only "somebody moved it" is benign; a token missing the workflow
-            # scope, or branch protection, must be red rather than a green no-op.
-            NOW_SHA=$(gh api "repos/${GH_REPO}/branches/${BOT_BRANCH}" --jq '.commit.sha' 2>/dev/null || true)
-            if [ -n "$NOW_SHA" ] && [ "$NOW_SHA" != "$REMOTE_SHA" ]; then
-              branch_ready false
-              echo "::warning title=Update branch not touched::${BOT_BRANCH} moved while this run was working. Leaving it alone."
-              echo "\`${BOT_BRANCH}\` changed mid-run - skipped to avoid overwriting it." >> "$GITHUB_STEP_SUMMARY"
-              exit 0
-            fi
-            echo "::error title=Push failed::Could not push ${BOT_BRANCH}. If the log mentions the workflow scope, WORKFLOW_DISPATCH_TOKEN lacks permission to change .github/workflows/**."
-            exit 1
-          fi
-
-          branch_ready true
-          echo "pushed=true" >> "$GITHUB_OUTPUT"
-          echo "Pushed ${UPDATE_COUNT} update(s) to \`${BOT_BRANCH}\`." >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Create or update pull request
-        if: steps.push.outputs.branch-ready == 'true'
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
-        env:
-          UPDATE_COUNT: ${{ steps.actions-check.outputs.update-count }}
-          BREAKING_COUNT: ${{ steps.actions-check.outputs.breaking-count }}
-          PUSHED: ${{ steps.push.outputs.pushed }}
-        with:
-          # The PAT: a PR opened by GITHUB_TOKEN does not trigger pull_request
-          # workflows, so the bot PR would sit there with no checks.
-          github-token: ${{ secrets.WORKFLOW_DISPATCH_TOKEN }}
-          script: |
-            const fs = require('fs');
-
-            const branch = process.env.BOT_BRANCH;
-            const count = Number(process.env.UPDATE_COUNT || 0);
-            const breaking = Number(process.env.BREAKING_COUNT || 0);
-            const { owner, repo } = context.repo;
-
-            const title = breaking > 0
-              ? `chore(deps): update ${count} github actions (${breaking} breaking)`
-              : `chore(deps): update ${count} github actions`;
-
-            const body = fs.readFileSync('actions-up-report.md', 'utf8');
-
-            const head = `${owner}:${branch}`;
-
-            const labels = (process.env.PR_LABELS || '')
-              .split(',')
-              .map(label => label.trim())
-              .filter(Boolean);
-
-            // Applied on both paths, so an existing PR picks up labels added to
-            // PR_LABELS after it was opened. addLabels is idempotent.
-            const label = async issue_number => {
-              if (labels.length === 0) return;
-              try {
-                await github.rest.issues.addLabels({ owner, repo, issue_number, labels });
-              } catch (error) {
-                // One label missing from the repo fails the whole call, so name them.
-                core.warning(`Could not add labels ${labels.join(', ')}: ${error.message}`);
-              }
-            };
-
-            const open = await github.rest.pulls.list({ owner, repo, head, state: 'open' });
-            if (open.data.length > 0) {
-              const number = open.data[0].number;
-              await github.rest.pulls.update({ owner, repo, pull_number: number, title, body });
-              await label(number);
-              core.info(`Updated pull request #${number}.`);
-              core.summary.addRaw(`Refreshed pull request #${number}.`).write();
-              return;
-            }
-
-            // Nothing new pushed and a closed PR means somebody rejected exactly
-            // these updates, so reopening one every run would be nagging. Absent that,
-            // create one: an earlier run pushed but failed to open it. A forced manual
-            // run is that same somebody asking for it back, so it opts out.
-            if (process.env.PUSHED !== 'true' && process.env.FORCE !== 'true') {
-              const closed = await github.rest.pulls.list({ owner, repo, head, state: 'closed' });
-              if (closed.data.length > 0) {
-                const number = closed.data[0].number;
-                core.info(`Pull request #${number} is closed and nothing new was pushed - leaving it alone.`);
-                core.summary
-                  .addRaw(`\`${branch}\` is up to date and pull request #${number} is closed - not reopening.`)
-                  .write();
-                return;
-              }
-            }
-
-            const created = await github.rest.pulls.create({
-              owner,
-              repo,
-              head: branch,
-              base: context.payload.repository.default_branch,
-              title,
-              body,
-            });
-            await label(created.data.number);
-            core.info(`Created pull request #${created.data.number}.`);
-
-            core.summary.addRaw(`Opened pull request #${created.data.number}.`).write();
