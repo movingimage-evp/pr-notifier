@@ -1,0 +1,201 @@
+name: Actions Up Report
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+# The org default is read-only, so commenting has to be granted explicitly.
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  report:
+    name: Check for outdated GitHub Actions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Run actions-up
+        id: check
+        env:
+          # Unauthenticated, actions-up hits the 60 req/hr limit and reports nothing
+          # outdated - a silent false negative. The PAT first: GITHUB_TOKEN is scoped
+          # to this repository, so private org actions (movingimage-evp/**) answer 404.
+          GITHUB_TOKEN: ${{ secrets.WORKFLOW_DISPATCH_TOKEN || secrets.GITHUB_TOKEN }}
+          # npm reads environment variables ahead of any .npmrc file, so these pin the
+          # registry that `npx` below resolves against. Without them a pull request can
+          # commit a root .npmrc pointing at another host and have npx run its code -
+          # with the PAT above in the environment, which may push .github/workflows/**.
+          npm_config_registry: https://registry.npmjs.org/
+          npm_config_ignore_scripts: 'true'
+        run: |
+          set -euo pipefail
+
+          OUT="$RUNNER_TEMP"
+          # Captured, then always echoed: under `set -e` a failing run would otherwise
+          # die with its only error text sitting unread in a file.
+          RC=0
+          npx --yes actions-up@1.16.0 --json > "$OUT/report.json" 2> "$OUT/err.log" || RC=$?
+          cat "$OUT/err.log" >&2
+          [ "$RC" -eq 0 ] || exit "$RC"
+
+          # Zero updates because nothing was scanned must not read as "up to date". The
+          # status names give the precise diagnostic; the count below is the backstop, since
+          # a renamed or absent status would fall through this case into a false green.
+          case "$(jq -r '.status // ""' "$OUT/report.json")" in
+            no-actions-found|nothing-to-check)
+              echo "::error::actions-up examined no action references."; exit 1 ;;
+          esac
+          CHECKED=$(jq -r '.summary.totalActionsChecked // 0' "$OUT/report.json")
+          [ "$CHECKED" -gt 0 ] || { echo "::error::actions-up examined no action references."; exit 1; }
+          # The fields this script reads are schemaVersion 1. Warn, not fail, if the pin moves:
+          # a report we half-understand is still worth posting, but not worth trusting silently.
+          SCHEMA=$(jq -r '.schemaVersion // 0' "$OUT/report.json")
+          [ "$SCHEMA" = 1 ] || echo "::warning::Unexpected actions-up schemaVersion ${SCHEMA}; the report may be incomplete."
+
+          # A failed lookup lands in none of the report's lists; stderr is its only trace.
+          # `[^:]*`, not `[^ :]*`: a name the pattern cannot parse drops out of FAILED
+          # entirely and lets the gate go green on an action that was never checked.
+          sed -n 's/^Failed to check \([^:]*\):.*/\1/p' "$OUT/err.log" > "$OUT/failed.txt"
+          FAILED=$(sort -u "$OUT/failed.txt" | paste -sd ',' -)
+          # Reconciled, because a "Failed to check" line with no colon matches neither pattern.
+          SEEN=$(grep -c '^Failed to check ' "$OUT/err.log" || true)
+          GOT=$(wc -l < "$OUT/failed.txt" | tr -d ' ')
+          [ "$SEEN" -le "$GOT" ] || FAILED="${FAILED:+$FAILED,}unparsed-failure"
+          # A pull request controls these names; a backtick would open a code span in the note.
+          FAILED=${FAILED//[\`|]/}
+
+          # file/line locate the pin's trailing comment, which the JSON does not carry. Age in
+          # jq, not `date` (BSD/GNU flags differ); `.000Z` breaks fromdateiso8601. Joined on
+          # \u001f, not tabs: tab is IFS whitespace, so an empty field (a null latestSha)
+          # would collapse and shift every later column into the wrong one.
+          jq -r 'def short: if test("^[0-9a-f]{40}$") then .[0:7] else . end;
+            def age: if . == null then "-" else
+              ((now - (sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601)) / 86400 | floor) as $d
+              | if $d < 1 then "today" elif $d < 60 then "\($d)d"
+                elif $d < 730 then "\(($d / 30) | floor)mo" else "\(($d / 365) | floor)y" end end;
+            .updates[] | [.action.name, ((.currentVersion // "") | short), .action.file, (.action.line // 0),
+              .latestVersion, ((.latestSha // "") | short), (.publishedAt | age), .currentRefType]
+              | join("\u001f")' \
+            "$OUT/report.json" > "$OUT/updates.tsv"
+
+          # Hash over version; `<br>` because a real newline would end the table row.
+          cell() {
+            if [ -n "$2" ] && [ "$1" != "$2" ]
+              then printf '`%s`<br>(`%s`)' "$2" "${1:-unknown}"
+              else printf '`%s`' "${1:-$2}"
+            fi
+          }
+
+          # `v3` coerces to 3.0.0, so `v3` -> `v7` reads major. Not comparable: unknown.
+          bump() {
+            case "${1:-x}${2:-x}" in *[!v0-9.]*) printf '⚪ unknown'; return ;; esac
+            IFS=. read -r a b _ <<< "${1#v}.0"; IFS=. read -r x y _ <<< "${2#v}.0"
+            if [ "$a" != "$x" ]; then printf '🔴 major'
+            elif [ "$b" != "$y" ]; then printf '🟡 minor'
+            else printf '🟢 patch'; fi
+          }
+
+          # sort -u collapses the same pin used in several files into one row.
+          while IFS=$'\037' read -r name cur file line latest sha age reftype; do
+            # A pull request controls this name; a backtick or pipe breaks out of the cell.
+            name=${name//[\`|]/}
+            # `|| true`: sed exits non-zero on a moved file, which would abort the run.
+            # An absent line number must not become `sed -n p`, which would read the whole
+            # file back as the comment: jq emits 0 for it above, and `sed -n 0p` errors into
+            # the empty-token path below. `:-0` covers the field being empty outright.
+            # `[^#]*#`, not `.*#`: greedy would take the *last* comment marker, so
+            # `# main # keep pinned` would read as `keep` here while the companion updater
+            # workflow protects it as a branch pin - a permanently red gate on a line the
+            # bot is never going to change.
+            token=$(sed -n "${line:-0}p" "$file" 2>/dev/null | sed -n 's/[^#]*#[[:space:]]*//p') || token=''
+            token=${token%% *}
+            # A branch pin tracks that branch deliberately; actions-up would repoint it at a tag.
+            case "$token" in
+              # &nbsp; so the longest label does not wrap onto a second line.
+              main|master|develop|trunk) change='🔀&nbsp;branch' ;;
+              v*[0-9]|[0-9]*[0-9])       change=$(bump "$token" "$latest") ;;
+              # No usable comment. A tag pin still carries its version in the ref
+              # itself; a SHA pin genuinely has nothing to compare.
+              *) [ "$reftype" = tag ] && token=$cur || token=''
+                 change=$(bump "$token" "$latest") ;;
+            esac
+            printf '| `%s` | %s | %s | %s | %s |\n' "$name" \
+              "$(cell "$token" "$cur")" "$(cell "$latest" "$sha")" "$change" "$age"
+          done < "$OUT/updates.tsv" | sort -u > "$OUT/rows.md"
+
+          COUNT=$(wc -l < "$OUT/rows.md" | tr -d ' ')
+          # One row can stand for the same pin at many call sites, so COUNT alone reads as
+          # less work than there is - a contributor fixes one of eight and thinks it is done.
+          TOTAL=$(wc -l < "$OUT/updates.tsv" | tr -d ' ')
+          # Branch pins are reported but never fail the gate: the only "fix" would be
+          # repointing them at a release tag, which is exactly what must not happen.
+          ACTIONABLE=$(grep -vc '🔀' "$OUT/rows.md" || true)
+
+          if [ "$COUNT" -eq 0 ]; then
+            printf '<!-- actions-up-report -->\n\n### GitHub Actions are up to date\n\nNo action required.\n' > "$OUT/report.md"
+          else
+            {
+              if [ "$TOTAL" -ne "$COUNT" ]
+                then printf '<!-- actions-up-report -->\n\n### %s outdated GitHub Action(s) across %s use(s)\n\n' "$COUNT" "$TOTAL"
+                else printf '<!-- actions-up-report -->\n\n### %s outdated GitHub Action(s)\n\n' "$COUNT"
+              fi
+              printf '| Action | Current | Latest | Change | Released |\n|---|---|---|---|---|\n'
+              cat "$OUT/rows.md"
+            } > "$OUT/report.md"
+          fi
+
+          [ -z "$FAILED" ] || {
+            printf '\n> ❗ Could not check: %s. If private, the token needs read access.\n' "$FAILED" >> "$OUT/report.md"
+            echo "::warning title=Some actions could not be checked::${FAILED}"
+          }
+
+          cat "$OUT/report.md" >> "$GITHUB_STEP_SUMMARY"
+          echo "count=$COUNT" >> "$GITHUB_OUTPUT"
+          echo "actionable=$ACTIONABLE" >> "$GITHUB_OUTPUT"
+          echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+
+      - name: Comment on the pull request
+        # Fork pull requests get a read-only token, so a failure here must not fail
+        # the run - it shows as an orange step instead.
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+
+          # Matched on the marker *and* the author: GitHub's "Quote reply" copies the
+          # raw body, hidden marker included, so a human quoting the report must never
+          # become the edit target.
+          ID=$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR}/comments" --paginate \
+            --jq 'map(select(.user.login == "github-actions[bot]"
+                             and (.body | contains("<!-- actions-up-report -->"))))
+                  | .[0].id // empty')
+
+          if [ -n "$ID" ]; then
+            gh api --method PATCH "repos/${GITHUB_REPOSITORY}/issues/comments/${ID}" \
+              -F body=@"$RUNNER_TEMP/report.md"
+          else
+            gh pr comment "$PR" --body-file "$RUNNER_TEMP/report.md"
+          fi
+
+      - name: Fail if outdated actions were found
+        # `actionable`, not `count`: branch-tracked pins are reported but cannot be
+        # fixed by a contributor, so they must not hold a pull request red. An action
+        # that could not be checked fails too - green would claim it is current.
+        if: steps.check.outputs.actionable != '0' || steps.check.outputs.failed != ''
+        # Via env, not `${{ }}` inside the script: `failed` is built from action names
+        # read out of the workflow files on the pull request branch, so a contributor
+        # could add `uses: evil/$(id)@v1` and have the substitution run in the runner.
+        env:
+          ACTIONABLE: ${{ steps.check.outputs.actionable }}
+          FAILED: ${{ steps.check.outputs.failed }}
+        run: |
+          echo "::error title=Outdated GitHub Actions::${ACTIONABLE} outdated action(s); could not check: ${FAILED:-none}. See the pull request comment."
+          exit 1
