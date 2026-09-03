@@ -1,3 +1,16 @@
+# ==============================================================================
+# DO NOT EDIT - THIS FILE IS MANAGED EXTERNALLY
+#
+# It is deployed and kept in sync by Terraform from:
+#   https://github.com/movingimage-evp/mi-github-configurations
+#
+# Any change made to this file in this repository will be silently overwritten
+# on the next Terraform apply. This applies to humans and to AI coding agents
+# alike: do not edit, rename, move or delete this file here.
+#
+# To change it, open a pull request against mi-github-configurations
+# (maintainer: Team300 / admin@movingimage.com).
+# ==============================================================================
 name: Actions Up Report
 
 on:
